@@ -1,0 +1,1 @@
+"""Rendering and input. The only package allowed to import pygame."""
