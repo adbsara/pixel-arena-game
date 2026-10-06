@@ -9,20 +9,24 @@ import pygame
 from pixel_arena.game import Arena, enemy_observation
 from pixel_arena.game import config as cfg
 from pixel_arena.game.policy import NumpyPolicy
+from pixel_arena.ui.sprites import CANVAS_SIZE, Sprites
 
 WEIGHTS_PATH = Path("models/chaser.npz")
 
-SCALE = 3           # each logical pixel becomes a 5x5 block on screen
+SCALE = 3            # each logical pixel becomes a 3x3 block on screen
 FPS = 60
 PAUSE_FRAMES = 30    # freeze after a hit, so you can see what happened
-READY_FRAMES = 45    # freeze before a round, so you can find your square
-WINDOW_SIZE = (cfg.ARENA_W * SCALE, cfg.ARENA_H * SCALE)
+READY_FRAMES = 45    # freeze before a round, so you can find your character
+WINDOW_SIZE = (CANVAS_SIZE[0] * SCALE, CANVAS_SIZE[1] * SCALE)
 
-BACKGROUND = (24, 26, 38)
-PLAYER_COLOR = (92, 200, 255)
-ENEMY_COLOR = (255, 96, 96)
-COIN_COLOR = (255, 210, 80)
-TEXT_COLOR = (230, 230, 240)
+TEXT_COLOR = (240, 240, 245)
+TEXT_BACKING = (24, 26, 38)
+
+# Hit effect: all three fade out over the freeze that follows a hit.
+SHAKE_PIXELS = 8               # how far the picture jumps at the start
+FLASH_COLOR = (210, 40, 40)
+FLASH_ALPHA = 120              # how solid the red flash is at the start
+BLINK_FRAMES = 4               # the player is hidden / shown this long
 
 # Physical key positions, so the controls work in any keyboard language.
 SCANCODE_ACTIONS = {
@@ -35,14 +39,6 @@ SCANCODE_ACTIONS = {
     pygame.KSCAN_RIGHT: cfg.RIGHT,
     pygame.KSCAN_D: cfg.RIGHT,
 }
-
-
-def draw_square(
-    canvas: pygame.Surface, pos: np.ndarray, size: int, color: tuple
-) -> None:
-    half = size // 2
-    rect = pygame.Rect(int(pos[0]) - half, int(pos[1]) - half, size, size)
-    pygame.draw.rect(canvas, color, rect)
 
 
 def percent(part: int, whole: int) -> str:
@@ -65,7 +61,7 @@ def print_summary(
         print(f"time  -> median: {np.median(seconds):.1f} s, best: {max(seconds):.1f} s")
         print(f"coins -> median: {np.median(round_coins):.1f}, best: {max(round_coins)}")
 
-    # What the player's square did during play, frame by frame.
+    # What the player did during play, frame by frame.
     active = movement["active"]
     print(f"active frames: {active}")
     print(f"  no key held:             {percent(movement['idle'], active)}")
@@ -86,12 +82,18 @@ async def main() -> None:
     font = pygame.font.Font(None, 28)
     clock = pygame.time.Clock()
 
-    # Everything is drawn on a tiny canvas, then blown up without smoothing.
-    # That is what gives the chunky pixel look.
-    canvas = pygame.Surface((cfg.ARENA_W, cfg.ARENA_H))
+    # Everything is drawn on a small canvas, then blown up without smoothing.
+    # That keeps the pixel art crisp.
+    sprites = Sprites()
+    canvas = pygame.Surface(CANVAS_SIZE)
+
+    # A red sheet laid over the window when the player is hit.
+    flash = pygame.Surface(WINDOW_SIZE)
+    flash.fill(FLASH_COLOR)
 
     arena = Arena(np.random.default_rng())
     enemy = NumpyPolicy.load(WEIGHTS_PATH)
+    fx_rng = np.random.default_rng()   # randomness for effects only
 
     held_keys: list[int] = []     # movement keys held down, oldest first
     round_frames: list[int] = []  # length of every finished round, in frames
@@ -101,7 +103,7 @@ async def main() -> None:
     ready_left = READY_FRAMES     # frames left of the freeze before a round
     round_over = False            # the last hit took the final life
 
-    # What the player's square did on each frame of play.
+    # What the player did on each frame of play.
     movement = {"active": 0, "idle": 0, "wall": 0, "toward": 0, "away": 0}
     frame_times: list[int] = []
 
@@ -169,24 +171,45 @@ async def main() -> None:
                     round_frames.append(frames_alive)
                     round_coins.append(arena.score)
 
-        canvas.fill(BACKGROUND)
-        draw_square(canvas, arena.coin_pos, cfg.COIN_SIZE, COIN_COLOR)
-        draw_square(canvas, arena.player_pos, cfg.ENTITY_SIZE, PLAYER_COLOR)
-        draw_square(canvas, arena.enemy_pos, cfg.ENTITY_SIZE, ENEMY_COLOR)
-        window.blit(pygame.transform.scale(canvas, WINDOW_SIZE), (0, 0))
+        # Strength of the hit effect: 1 right after a hit, fading to 0.
+        hit_strength = pause_left / PAUSE_FRAMES
+
+        canvas.blit(sprites.background, (0, 0))
+        sprites.draw(canvas, sprites.coin, arena.coin_pos)
+        # The player blinks while the game is frozen after a hit.
+        if pause_left == 0 or (pause_left // BLINK_FRAMES) % 2 == 0:
+            sprites.draw(canvas, sprites.player, arena.player_pos)
+        sprites.draw(canvas, sprites.enemy, arena.enemy_pos)
+
+        # Screen shake: the whole picture jumps around, less and less.
+        reach = int(SHAKE_PIXELS * hit_strength)
+        if reach > 0:
+            offset = (
+                int(fx_rng.integers(-reach, reach + 1)),
+                int(fx_rng.integers(-reach, reach + 1)),
+            )
+        else:
+            offset = (0, 0)
+        window.fill((0, 0, 0))
+        window.blit(pygame.transform.scale(canvas, WINDOW_SIZE), offset)
+
+        # Red flash that fades out.
+        if hit_strength > 0:
+            flash.set_alpha(int(FLASH_ALPHA * hit_strength))
+            window.blit(flash, (0, 0))
 
         best_coins = max(round_coins, default=0)
         hud = (
-            f"round: {len(round_frames) + (0 if round_over else 1)}   "
+            f" round: {len(round_frames) + (0 if round_over else 1)}   "
             f"lives: {arena.lives}   "
-            f"coins: {arena.score}   "
-            f"best: {best_coins}"
+            f"potions: {arena.score}   "
+            f"best: {best_coins} "
         )
         if pause_left > 0:
-            hud += "   ROUND OVER" if round_over else "   HIT!"
+            hud += "  ROUND OVER " if round_over else "  HIT! "
         elif ready_left > 0:
-            hud += "   GET READY"
-        window.blit(font.render(hud, True, TEXT_COLOR), (10, 8))
+            hud += "  GET READY "
+        window.blit(font.render(hud, True, TEXT_COLOR, TEXT_BACKING), (10, 10))
 
         pygame.display.flip()
         frame_times.append(clock.tick(FPS))
