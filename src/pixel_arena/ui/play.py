@@ -12,15 +12,16 @@ from pixel_arena.game.policy import NumpyPolicy
 
 WEIGHTS_PATH = Path("models/chaser.npz")
 
-SCALE = 5            # each logical pixel becomes a 5x5 block on screen
+SCALE = 3           # each logical pixel becomes a 5x5 block on screen
 FPS = 60
-PAUSE_FRAMES = 30    # freeze after a catch, so you can see what happened
+PAUSE_FRAMES = 30    # freeze after a hit, so you can see what happened
 READY_FRAMES = 45    # freeze before a round, so you can find your square
 WINDOW_SIZE = (cfg.ARENA_W * SCALE, cfg.ARENA_H * SCALE)
 
 BACKGROUND = (24, 26, 38)
 PLAYER_COLOR = (92, 200, 255)
 ENEMY_COLOR = (255, 96, 96)
+COIN_COLOR = (255, 210, 80)
 TEXT_COLOR = (230, 230, 240)
 
 # Physical key positions, so the controls work in any keyboard language.
@@ -36,36 +37,46 @@ SCANCODE_ACTIONS = {
 }
 
 
-def draw_entity(canvas: pygame.Surface, pos: np.ndarray, color: tuple) -> None:
-    half = cfg.ENTITY_SIZE // 2
-    rect = pygame.Rect(
-        int(pos[0]) - half, int(pos[1]) - half, cfg.ENTITY_SIZE, cfg.ENTITY_SIZE
-    )
+def draw_square(
+    canvas: pygame.Surface, pos: np.ndarray, size: int, color: tuple
+) -> None:
+    half = size // 2
+    rect = pygame.Rect(int(pos[0]) - half, int(pos[1]) - half, size, size)
     pygame.draw.rect(canvas, color, rect)
+
+
+def percent(part: int, whole: int) -> str:
+    return f"{100 * part / whole:.0f}%" if whole else "n/a"
 
 
 def print_summary(
     round_frames: list[int],
+    round_coins: list[int],
+    movement: dict[str, int],
     frame_times: list[int],
-    key_downs: int,
-    key_ups: int,
-    held_at_exit: int,
 ) -> None:
-    """Report the session: how the rounds went, then technical health."""
+    """Report the session: rounds, how the player moved, technical health."""
     print(f"player speed: {cfg.PLAYER_SPEED}, enemy speed: {cfg.ENEMY_SPEED}")
     print(f"rounds: {len(round_frames)}")
     if round_frames:
         seconds = [frames / FPS for frames in round_frames]
         print("round times (s): " + ", ".join(f"{s:.1f}" for s in seconds))
-        print(f"median: {np.median(seconds):.1f} s, best: {max(seconds):.1f} s")
+        print("round coins: " + ", ".join(str(c) for c in round_coins))
+        print(f"time  -> median: {np.median(seconds):.1f} s, best: {max(seconds):.1f} s")
+        print(f"coins -> median: {np.median(round_coins):.1f}, best: {max(round_coins)}")
+
+    # What the player's square did during play, frame by frame.
+    active = movement["active"]
+    print(f"active frames: {active}")
+    print(f"  no key held:             {percent(movement['idle'], active)}")
+    print(f"  pushing into a wall:     {percent(movement['wall'], active)}")
+    print(f"  moving toward the enemy: {percent(movement['toward'], active)}")
+    print(f"  moving away from enemy:  {percent(movement['away'], active)}")
 
     # Skip the first frames, which include window start-up.
     times = np.array(frame_times[10:] or frame_times)
     if len(times):
-        print(f"frames: {len(times)}")
         print(f"mean frame: {times.mean():.1f} ms, worst frame: {times.max()} ms")
-        print(f"slow frames (over 25 ms): {int((times > 25).sum())}")
-    print(f"key downs: {key_downs}, key ups: {key_ups}, held at exit: {held_at_exit}")
 
 
 async def main() -> None:
@@ -84,14 +95,15 @@ async def main() -> None:
 
     held_keys: list[int] = []     # movement keys held down, oldest first
     round_frames: list[int] = []  # length of every finished round, in frames
+    round_coins: list[int] = []   # coins collected in every finished round
     frames_alive = 0
-    pause_left = 0                # frames left of the freeze after a catch
+    pause_left = 0                # frames left of the freeze after a hit
     ready_left = READY_FRAMES     # frames left of the freeze before a round
+    round_over = False            # the last hit took the final life
 
-    # Technical measurements, printed when the game closes.
+    # What the player's square did on each frame of play.
+    movement = {"active": 0, "idle": 0, "wall": 0, "toward": 0, "away": 0}
     frame_times: list[int] = []
-    key_downs = 0
-    key_ups = 0
 
     running = True
     while running:
@@ -102,12 +114,9 @@ async def main() -> None:
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.scancode in SCANCODE_ACTIONS:
-                    key_downs += 1
                     if event.scancode not in held_keys:
                         held_keys.append(event.scancode)
             elif event.type == pygame.KEYUP:
-                if event.scancode in SCANCODE_ACTIONS:
-                    key_ups += 1
                 if event.scancode in held_keys:
                     held_keys.remove(event.scancode)
             elif event.type == pygame.WINDOWFOCUSLOST:
@@ -119,36 +128,62 @@ async def main() -> None:
         player_action = SCANCODE_ACTIONS[held_keys[-1]] if held_keys else cfg.STAY
 
         if pause_left > 0:
-            # Frozen after a catch. Then set up the next round.
+            # Frozen after a hit.
             pause_left -= 1
             if pause_left == 0:
-                arena.reset()
-                frames_alive = 0
-                ready_left = READY_FRAMES
+                if round_over:
+                    # Out of lives: set up the next round.
+                    arena.reset()
+                    frames_alive = 0
+                    round_over = False
+                    ready_left = READY_FRAMES
+                else:
+                    # Lives left: push the enemy back and carry on.
+                    arena.send_enemy_away()
         elif ready_left > 0:
             # New positions are on screen, but nobody moves yet.
             ready_left -= 1
         else:
+            prev_player = arena.player_pos.copy()
+            prev_enemy = arena.enemy_pos.copy()
+
             enemy_action = enemy(enemy_observation(arena))
-            caught = arena.step(player_action, enemy_action)
+            hit = arena.step(player_action, enemy_action)
             frames_alive += 1
-            if caught:
-                round_frames.append(frames_alive)
+
+            # Classify this frame by what the player's own move did.
+            movement["active"] += 1
+            if player_action == cfg.STAY:
+                movement["idle"] += 1
+            elif not np.any(arena.player_vel):
+                movement["wall"] += 1
+            else:
+                before = np.linalg.norm(prev_player - prev_enemy)
+                after = np.linalg.norm(arena.player_pos - prev_enemy)
+                movement["toward" if after < before else "away"] += 1
+
+            if hit:
                 pause_left = PAUSE_FRAMES
+                if arena.lives == 0:
+                    round_over = True
+                    round_frames.append(frames_alive)
+                    round_coins.append(arena.score)
 
         canvas.fill(BACKGROUND)
-        draw_entity(canvas, arena.player_pos, PLAYER_COLOR)
-        draw_entity(canvas, arena.enemy_pos, ENEMY_COLOR)
+        draw_square(canvas, arena.coin_pos, cfg.COIN_SIZE, COIN_COLOR)
+        draw_square(canvas, arena.player_pos, cfg.ENTITY_SIZE, PLAYER_COLOR)
+        draw_square(canvas, arena.enemy_pos, cfg.ENTITY_SIZE, ENEMY_COLOR)
         window.blit(pygame.transform.scale(canvas, WINDOW_SIZE), (0, 0))
 
-        best = max(round_frames, default=0)
+        best_coins = max(round_coins, default=0)
         hud = (
-            f"round: {len(round_frames) + 1}   "
-            f"survived: {frames_alive / FPS:.1f}s   "
-            f"best: {best / FPS:.1f}s"
+            f"round: {len(round_frames) + (0 if round_over else 1)}   "
+            f"lives: {arena.lives}   "
+            f"coins: {arena.score}   "
+            f"best: {best_coins}"
         )
         if pause_left > 0:
-            hud += "   CAUGHT!"
+            hud += "   ROUND OVER" if round_over else "   HIT!"
         elif ready_left > 0:
             hud += "   GET READY"
         window.blit(font.render(hud, True, TEXT_COLOR), (10, 8))
@@ -160,7 +195,7 @@ async def main() -> None:
         await asyncio.sleep(0)
 
     pygame.quit()
-    print_summary(round_frames, frame_times, key_downs, key_ups, len(held_keys))
+    print_summary(round_frames, round_coins, movement, frame_times)
 
 
 if __name__ == "__main__":
