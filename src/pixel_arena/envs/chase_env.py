@@ -16,18 +16,19 @@ APPROACH_SCALE = 0.01    # reward per pixel of distance closed this frame
 
 
 class ChaseEnv(gym.Env):
-    """The agent controls the enemy. A scripted player wanders around."""
+    """The agent controls the enemy. A scripted player stands in for the human."""
 
     metadata = {"render_modes": []}
 
-    def __init__(self):
+    def __init__(self, player_cls: type = WanderingPlayer):
         super().__init__()
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32
         )
         self.action_space = spaces.Discrete(cfg.NUM_ACTIONS)
+        self.player_cls = player_cls
         self.arena: Arena | None = None
-        self.player: WanderingPlayer | None = None
+        self.player = None
         self._steps = 0
 
     def reset(self, *, seed=None, options=None):
@@ -36,7 +37,7 @@ class ChaseEnv(gym.Env):
         # The arena and the scripted player share Gymnasium's random
         # generator, so one seed reproduces the whole episode.
         self.arena = Arena(self.np_random)
-        self.player = WanderingPlayer(self.np_random)
+        self.player = self.player_cls(self.np_random)
         self._steps = 0
 
         return enemy_observation(self.arena), {}

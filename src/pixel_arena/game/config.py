@@ -7,12 +7,12 @@ import numpy as np
 ARENA_W = 160          # arena width in logical pixels
 ARENA_H = 120          # arena height in logical pixels
 ENTITY_SIZE = 8        # side of the player / enemy square
-MIN_SPAWN_DIST = 50    # minimum distance between the two at reset
+MIN_SPAWN_DIST = 90    # minimum distance between the two at reset
 
 # --- Movement --------------------------------------------------------------
 
 PLAYER_SPEED = 1.6     # pixels per frame
-ENEMY_SPEED = 1.4      # pixels per frame
+ENEMY_SPEED = 1.3    # pixels per frame
 
 # --- Actions ---------------------------------------------------------------
 

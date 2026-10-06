@@ -1,19 +1,29 @@
 """Measure how well a policy plays ChaseEnv, independently of the reward."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 
 from pixel_arena.envs import ChaseEnv
+from pixel_arena.envs.scripted_player import PerimeterPlayer, WanderingPlayer
 from pixel_arena.game import config as cfg
+from pixel_arena.game.policy import NumpyPolicy
+
+WEIGHTS_PATH = Path("models/chaser.npz")
 
 # A policy is any function that maps an observation to an action.
 Policy = Callable[[np.ndarray], int]
 
 
-def evaluate(policy: Policy, episodes: int = 200, seed: int = 0) -> dict[str, float]:
+def evaluate(
+    policy: Policy,
+    episodes: int = 200,
+    seed: int = 0,
+    player_cls: type = WanderingPlayer,
+) -> dict[str, float]:
     """Play full episodes and report catch rate, mean length and mean reward."""
-    env = ChaseEnv()
+    env = ChaseEnv(player_cls=player_cls)
     catches = 0
     lengths = []
     returns = []
@@ -47,5 +57,15 @@ def random_policy(rng: np.random.Generator) -> Policy:
 
 
 if __name__ == "__main__":
-    result = evaluate(random_policy(np.random.default_rng(0)))
-    print("random enemy:", {k: round(v, 3) for k, v in result.items()})
+    enemies = {"random": random_policy(np.random.default_rng(0))}
+    if WEIGHTS_PATH.exists():
+        enemies["trained"] = NumpyPolicy.load(WEIGHTS_PATH)
+
+    players = {"wandering": WanderingPlayer, "perimeter": PerimeterPlayer}
+
+    # Every enemy against every kind of player.
+    for enemy_name, policy in enemies.items():
+        for player_name, player_cls in players.items():
+            result = evaluate(policy, player_cls=player_cls)
+            rounded = {k: round(v, 3) for k, v in result.items()}
+            print(f"{enemy_name:8} enemy vs {player_name:9} player: {rounded}")
