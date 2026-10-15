@@ -59,3 +59,16 @@ ATTACK_COOLDOWN = 40       # frames the player must wait between swings
 STUN_FRAMES = 90           # frames a struck enemy stays frozen and harmless
 KNOCKBACK = 14 
 MAX_SWORDS = 5                 # pixels a struck enemy is pushed back
+
+
+# --- Obstacles -----------------------------------------------------------
+
+# Each wall is a rectangle: (x, y, width, height), in arena coordinates.
+# This layout is one horizontal wall across the middle, with a gap at
+# each end wide enough to walk through.
+_WALL_Y = ARENA_H // 2 - TILE // 2
+_GAP = TILE * 3
+WALLS = [
+    (0, _WALL_Y, ARENA_W // 2 - _GAP, TILE),
+    (ARENA_W // 2 + _GAP, _WALL_Y, ARENA_W - (ARENA_W // 2 + _GAP), TILE),
+]

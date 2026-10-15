@@ -1,10 +1,24 @@
-"""The arena: one room, one player, one enemy, one coin."""
+"""The arena: one room, one player, one enemy, one coin, interior walls."""
 
 import numpy as np
 
 from pixel_arena.game import config as cfg
 
-_COIN_TRIES = 200   # give up looking for a valid coin spot after this many
+_COIN_TRIES = 200    # give up looking for a valid coin spot after this many
+_SPAWN_TRIES = 200    # give up looking for a wall-free spawn after this many
+
+
+def _overlaps_wall(pos: np.ndarray, half: float) -> bool:
+    """Does a square of side 2*half, centred on pos, touch any wall rect?"""
+    for wx, wy, ww, wh in cfg.WALLS:
+        if (
+            pos[0] + half > wx
+            and pos[0] - half < wx + ww
+            and pos[1] + half > wy
+            and pos[1] - half < wy + wh
+        ):
+            return True
+    return False
 
 
 class Arena:
@@ -33,16 +47,27 @@ class Arena:
         self.reset()
 
     def _random_pos(self) -> np.ndarray:
-        return self.rng.uniform(cfg.POS_LOW, cfg.POS_HIGH).astype(np.float32)
+        """A spot inside the arena that is not inside a wall."""
+        half = cfg.ENTITY_SIZE / 2
+        for _ in range(_SPAWN_TRIES):
+            pos = self.rng.uniform(cfg.POS_LOW, cfg.POS_HIGH).astype(np.float32)
+            if not _overlaps_wall(pos, half):
+                return pos
+        return pos
 
     def _valid_coin_spot(self) -> np.ndarray:
-        """A spot away from the walls, the player and the enemy."""
+        """A spot away from the walls, the player, the enemy and any obstacle."""
         pos = self.coin_pos
+        half = cfg.COIN_SIZE / 2
         for _ in range(_COIN_TRIES):
             pos = self.rng.uniform(cfg.COIN_LOW, cfg.COIN_HIGH).astype(np.float32)
             from_player = np.linalg.norm(pos - self.player_pos)
             from_enemy = np.linalg.norm(pos - self.enemy_pos)
-            if from_player >= cfg.COIN_MIN_DIST and from_enemy >= cfg.COIN_ENEMY_MIN_DIST:
+            if (
+                from_player >= cfg.COIN_MIN_DIST
+                and from_enemy >= cfg.COIN_ENEMY_MIN_DIST
+                and not _overlaps_wall(pos, half)
+            ):
                 break
         return pos
 
@@ -99,13 +124,7 @@ class Arena:
         return bool(dx < reach and dy < reach)
 
     def sword_reaches_enemy(self) -> bool:
-        """Any enemy within range is hit, regardless of which way the player faces.
-
-        Precise directional aiming is hard with keyboard controls at this
-        speed, so the hitbox is a circle around the player rather than a
-        narrow cone. The sword is still drawn pointing the way the player
-        last moved, for feedback, but the hit itself is forgiving.
-        """
+        """Any enemy within range is hit, regardless of which way the player faces."""
         return self.distance() <= cfg.ATTACK_RANGE
 
     def send_enemy_away(self) -> None:
@@ -123,6 +142,30 @@ class Arena:
         far = max(corners, key=lambda c: (c[0] - px) ** 2 + (c[1] - py) ** 2)
         self.enemy_pos = np.array(far, dtype=np.float32)
 
+    def _move(self, pos: np.ndarray, direction: np.ndarray, speed: float) -> np.ndarray:
+        """Move a square, sliding along a wall instead of stopping dead.
+
+        Tries the full move first. If that lands inside a wall, it tries
+        moving on only the x axis, then only the y axis, so bumping into a
+        wall at an angle still lets the entity slide along it.
+        """
+        half = cfg.ENTITY_SIZE / 2
+        step = direction * speed
+
+        full = np.clip(pos + step, cfg.POS_LOW, cfg.POS_HIGH)
+        if not _overlaps_wall(full, half):
+            return full
+
+        x_only = np.clip(pos + [step[0], 0], cfg.POS_LOW, cfg.POS_HIGH)
+        if not _overlaps_wall(x_only, half):
+            return x_only
+
+        y_only = np.clip(pos + [0, step[1]], cfg.POS_LOW, cfg.POS_HIGH)
+        if not _overlaps_wall(y_only, half):
+            return y_only
+
+        return pos.copy()
+
     def step(self, player_action: int, enemy_action: int, attack: bool = False) -> bool:
         """Advance one frame. Returns True if the enemy hit the player."""
         prev_player = self.player_pos.copy()
@@ -130,21 +173,19 @@ class Arena:
         if player_action != cfg.STAY:
             self.facing = player_action
 
-        self.player_pos = np.clip(
-            self.player_pos + cfg.DIRECTIONS[player_action] * cfg.PLAYER_SPEED,
-            cfg.POS_LOW, cfg.POS_HIGH,
+        self.player_pos = self._move(
+            self.player_pos, cfg.DIRECTIONS[player_action], cfg.PLAYER_SPEED
         )
 
         # A stunned enemy stands still until the stun wears off.
         if self.enemy_stun > 0:
             self.enemy_stun -= 1
         else:
-            self.enemy_pos = np.clip(
-                self.enemy_pos + cfg.DIRECTIONS[enemy_action] * cfg.ENEMY_SPEED,
-                cfg.POS_LOW, cfg.POS_HIGH,
+            self.enemy_pos = self._move(
+                self.enemy_pos, cfg.DIRECTIONS[enemy_action], cfg.ENEMY_SPEED
             )
 
-        # Real displacement after clipping: zero when pushing into a wall.
+        # Real displacement after sliding: zero when fully blocked.
         self.player_vel = self.player_pos - prev_player
 
         # The swing. It only happens if the cooldown has run out and at
@@ -161,13 +202,11 @@ class Arena:
                 self.just_struck = True
                 self.enemy_stun = cfg.STUN_FRAMES
                 # Knock the enemy straight back, away from the player.
+                # _move keeps it from landing inside a wall.
                 gap = self.enemy_pos - self.player_pos
                 norm = float(np.linalg.norm(gap))
                 direction = gap / norm if norm > 1e-6 else cfg.DIRECTIONS[self.facing]
-                self.enemy_pos = np.clip(
-                    self.enemy_pos + direction * cfg.KNOCKBACK,
-                    cfg.POS_LOW, cfg.POS_HIGH,
-                )
+                self.enemy_pos = self._move(self.enemy_pos, direction, cfg.KNOCKBACK)
 
         self.just_collected = self.touches_coin()
         if self.just_collected:
