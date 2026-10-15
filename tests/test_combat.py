@@ -1,4 +1,4 @@
-"""Tests for the sword: reach, stun, knockback and cooldown."""
+"""Tests for the sword: range, stun, knockback and cooldown."""
 
 import numpy as np
 
@@ -15,7 +15,7 @@ def place(arena: Arena, player: tuple, enemy: tuple) -> None:
     arena.enemy_pos = np.array(enemy, dtype=np.float32)
 
 
-def test_a_swing_at_an_enemy_in_front_stuns_and_pushes_it():
+def test_a_swing_at_a_nearby_enemy_stuns_and_pushes_it_away():
     arena = make_arena()
     place(arena, player=(100, 100), enemy=(120, 100))
 
@@ -26,9 +26,21 @@ def test_a_swing_at_an_enemy_in_front_stuns_and_pushes_it():
     assert np.isclose(arena.enemy_pos[0], 120 + cfg.KNOCKBACK)
 
 
-def test_a_swing_misses_an_enemy_behind_the_player():
+def test_a_swing_hits_a_nearby_enemy_in_any_direction():
+    # Facing right, but the enemy is close behind, to the left.
     arena = make_arena()
     place(arena, player=(100, 100), enemy=(80, 100))
+
+    arena.step(cfg.RIGHT, cfg.STAY, attack=True)
+
+    assert arena.just_struck is True
+    # Knockback pushes the enemy further away from the player (leftwards).
+    assert arena.enemy_pos[0] < 80
+
+
+def test_a_swing_misses_a_distant_enemy():
+    arena = make_arena()
+    place(arena, player=(100, 100), enemy=(300, 100))
 
     arena.step(cfg.RIGHT, cfg.STAY, attack=True)
 
@@ -65,6 +77,28 @@ def test_the_cooldown_blocks_a_second_swing():
 
     arena.step(cfg.STAY, cfg.STAY, attack=True)
     assert arena.just_attacked is True
+
+    arena.step(cfg.STAY, cfg.STAY, attack=True)
+    assert arena.just_attacked is False
+
+
+
+def test_round_starts_with_full_swords():
+    arena = make_arena()
+    assert arena.swords == cfg.MAX_SWORDS
+
+
+def test_running_out_of_swords_blocks_further_swings():
+    arena = make_arena()
+    place(arena, player=(100, 100), enemy=(300, 100))
+
+    for _ in range(cfg.MAX_SWORDS):
+        arena.step(cfg.STAY, cfg.STAY, attack=True)
+        # Wait out the cooldown so the next press is a fresh swing attempt.
+        for _ in range(cfg.ATTACK_COOLDOWN):
+            arena.step(cfg.STAY, cfg.STAY)
+
+    assert arena.swords == 0
 
     arena.step(cfg.STAY, cfg.STAY, attack=True)
     assert arena.just_attacked is False

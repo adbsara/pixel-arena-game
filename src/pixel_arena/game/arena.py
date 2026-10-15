@@ -26,6 +26,7 @@ class Arena:
         self.facing = cfg.RIGHT       # the last direction the player moved in
         self.attack_cooldown = 0      # frames until the player may swing again
         self.enemy_stun = 0           # frames the enemy stays frozen
+        self.swords = cfg.MAX_SWORDS  # swings left this round
         self.just_attacked = False    # True only on the frame of a swing
         self.just_struck = False      # True only on the frame a swing connects
 
@@ -78,6 +79,7 @@ class Arena:
         self.facing = cfg.RIGHT
         self.attack_cooldown = 0
         self.enemy_stun = 0
+        self.swords = cfg.MAX_SWORDS
         self.just_attacked = False
         self.just_struck = False
 
@@ -97,12 +99,14 @@ class Arena:
         return bool(dx < reach and dy < reach)
 
     def sword_reaches_enemy(self) -> bool:
-        """The enemy is inside the box in front of the player."""
-        ahead = cfg.DIRECTIONS[self.facing]
-        to_enemy = self.enemy_pos - self.player_pos
-        forward = float(to_enemy @ ahead)
-        sideways = float(abs(to_enemy @ ahead[::-1]))
-        return 0 <= forward <= cfg.ATTACK_REACH and sideways <= cfg.ATTACK_SIDE
+        """Any enemy within range is hit, regardless of which way the player faces.
+
+        Precise directional aiming is hard with keyboard controls at this
+        speed, so the hitbox is a circle around the player rather than a
+        narrow cone. The sword is still drawn pointing the way the player
+        last moved, for feedback, but the hit itself is forgiving.
+        """
+        return self.distance() <= cfg.ATTACK_RANGE
 
     def send_enemy_away(self) -> None:
         """Move the enemy to the corner farthest from the player.
@@ -143,19 +147,25 @@ class Arena:
         # Real displacement after clipping: zero when pushing into a wall.
         self.player_vel = self.player_pos - prev_player
 
-        # The swing. It only happens if the cooldown has run out.
+        # The swing. It only happens if the cooldown has run out and at
+        # least one sword charge is left.
         self.just_attacked = False
         self.just_struck = False
         if self.attack_cooldown > 0:
             self.attack_cooldown -= 1
-        elif attack:
+        elif attack and self.swords > 0:
             self.just_attacked = True
             self.attack_cooldown = cfg.ATTACK_COOLDOWN
+            self.swords -= 1
             if self.sword_reaches_enemy():
                 self.just_struck = True
                 self.enemy_stun = cfg.STUN_FRAMES
+                # Knock the enemy straight back, away from the player.
+                gap = self.enemy_pos - self.player_pos
+                norm = float(np.linalg.norm(gap))
+                direction = gap / norm if norm > 1e-6 else cfg.DIRECTIONS[self.facing]
                 self.enemy_pos = np.clip(
-                    self.enemy_pos + cfg.DIRECTIONS[self.facing] * cfg.KNOCKBACK,
+                    self.enemy_pos + direction * cfg.KNOCKBACK,
                     cfg.POS_LOW, cfg.POS_HIGH,
                 )
 

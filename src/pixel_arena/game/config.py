@@ -54,8 +54,8 @@ START_LIVES = 3            # hits the player can take before the round ends
 
 # --- Combat ------------------------------------------------------------------
 
-ATTACK_REACH = 30          # how far ahead of the player the sword reaches
-ATTACK_SIDE = 12           # how far to either side the swing still connects
+ATTACK_RANGE = 34          # how far to either side the swing still connects
 ATTACK_COOLDOWN = 40       # frames the player must wait between swings
 STUN_FRAMES = 90           # frames a struck enemy stays frozen and harmless
-KNOCKBACK = 14             # pixels a struck enemy is pushed back
+KNOCKBACK = 14 
+MAX_SWORDS = 5                 # pixels a struck enemy is pushed back
