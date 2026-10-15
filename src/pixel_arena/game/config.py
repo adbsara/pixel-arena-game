@@ -41,6 +41,7 @@ COIN_WALL_MARGIN = 40      # coins never appear closer than this to a wall
 COIN_MIN_DIST = 70         # a new coin appears at least this far from the player
 COIN_ENEMY_MIN_DIST = 90   # ... and at least this far from the enemy
 COIN_CANDIDATES = 3 
+
 COIN_LOW = np.array([COIN_WALL_MARGIN, COIN_WALL_MARGIN], dtype=np.float32)
 COIN_HIGH = np.array(
     [ARENA_W - COIN_WALL_MARGIN, ARENA_H - COIN_WALL_MARGIN], dtype=np.float32
@@ -49,3 +50,12 @@ COIN_HIGH = np.array(
 # --- Lives -------------------------------------------------------------------
 
 START_LIVES = 3            # hits the player can take before the round ends
+
+
+# --- Combat ------------------------------------------------------------------
+
+ATTACK_REACH = 30          # how far ahead of the player the sword reaches
+ATTACK_SIDE = 12           # how far to either side the swing still connects
+ATTACK_COOLDOWN = 40       # frames the player must wait between swings
+STUN_FRAMES = 90           # frames a struck enemy stays frozen and harmless
+KNOCKBACK = 14             # pixels a struck enemy is pushed back

@@ -21,6 +21,14 @@ class Arena:
         self.score = 0                # coins collected this round
         self.lives = cfg.START_LIVES  # hits left before the round ends
         self.just_collected = False   # True only on the frame a coin is taken
+
+        # Combat state.
+        self.facing = cfg.RIGHT       # the last direction the player moved in
+        self.attack_cooldown = 0      # frames until the player may swing again
+        self.enemy_stun = 0           # frames the enemy stays frozen
+        self.just_attacked = False    # True only on the frame of a swing
+        self.just_struck = False      # True only on the frame a swing connects
+
         self.reset()
 
     def _random_pos(self) -> np.ndarray:
@@ -67,6 +75,11 @@ class Arena:
         self.score = 0
         self.lives = cfg.START_LIVES
         self.just_collected = False
+        self.facing = cfg.RIGHT
+        self.attack_cooldown = 0
+        self.enemy_stun = 0
+        self.just_attacked = False
+        self.just_struck = False
 
     def distance(self) -> float:
         """Straight-line distance between the player and the enemy."""
@@ -83,6 +96,14 @@ class Arena:
         reach = (cfg.ENTITY_SIZE + cfg.COIN_SIZE) / 2
         return bool(dx < reach and dy < reach)
 
+    def sword_reaches_enemy(self) -> bool:
+        """The enemy is inside the box in front of the player."""
+        ahead = cfg.DIRECTIONS[self.facing]
+        to_enemy = self.enemy_pos - self.player_pos
+        forward = float(to_enemy @ ahead)
+        sideways = float(abs(to_enemy @ ahead[::-1]))
+        return 0 <= forward <= cfg.ATTACK_REACH and sideways <= cfg.ATTACK_SIDE
+
     def send_enemy_away(self) -> None:
         """Move the enemy to the corner farthest from the player.
 
@@ -98,28 +119,53 @@ class Arena:
         far = max(corners, key=lambda c: (c[0] - px) ** 2 + (c[1] - py) ** 2)
         self.enemy_pos = np.array(far, dtype=np.float32)
 
-    def step(self, player_action: int, enemy_action: int) -> bool:
+    def step(self, player_action: int, enemy_action: int, attack: bool = False) -> bool:
         """Advance one frame. Returns True if the enemy hit the player."""
         prev_player = self.player_pos.copy()
+
+        if player_action != cfg.STAY:
+            self.facing = player_action
 
         self.player_pos = np.clip(
             self.player_pos + cfg.DIRECTIONS[player_action] * cfg.PLAYER_SPEED,
             cfg.POS_LOW, cfg.POS_HIGH,
         )
-        self.enemy_pos = np.clip(
-            self.enemy_pos + cfg.DIRECTIONS[enemy_action] * cfg.ENEMY_SPEED,
-            cfg.POS_LOW, cfg.POS_HIGH,
-        )
+
+        # A stunned enemy stands still until the stun wears off.
+        if self.enemy_stun > 0:
+            self.enemy_stun -= 1
+        else:
+            self.enemy_pos = np.clip(
+                self.enemy_pos + cfg.DIRECTIONS[enemy_action] * cfg.ENEMY_SPEED,
+                cfg.POS_LOW, cfg.POS_HIGH,
+            )
 
         # Real displacement after clipping: zero when pushing into a wall.
         self.player_vel = self.player_pos - prev_player
+
+        # The swing. It only happens if the cooldown has run out.
+        self.just_attacked = False
+        self.just_struck = False
+        if self.attack_cooldown > 0:
+            self.attack_cooldown -= 1
+        elif attack:
+            self.just_attacked = True
+            self.attack_cooldown = cfg.ATTACK_COOLDOWN
+            if self.sword_reaches_enemy():
+                self.just_struck = True
+                self.enemy_stun = cfg.STUN_FRAMES
+                self.enemy_pos = np.clip(
+                    self.enemy_pos + cfg.DIRECTIONS[self.facing] * cfg.KNOCKBACK,
+                    cfg.POS_LOW, cfg.POS_HIGH,
+                )
 
         self.just_collected = self.touches_coin()
         if self.just_collected:
             self.score += 1
             self.coin_pos = self._random_coin_pos()
 
-        hit = self.is_caught()
+        # A stunned enemy cannot hurt the player.
+        hit = self.is_caught() and self.enemy_stun == 0
         if hit:
             self.lives = max(0, self.lives - 1)
         return hit
